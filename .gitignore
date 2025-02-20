@@ -54,5 +54,6 @@ venv.bak/
 Thumbs.db
 
 # 
-src/training/
+src/training/*
+!src/training/yolo_training.ipynb
 dataset/
