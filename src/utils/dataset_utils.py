@@ -1,5 +1,6 @@
 import os
 import cv2
+import shutil
 import random
 from torch.utils.data import Dataset
 import torchvision.transforms as transforms
@@ -44,7 +45,7 @@ def extract_ball_objects(image_folder, label_folder, ball_class=0):
     return ball_objects
 
 
-def copy_paste_augmentation(img, labels, objects, paste_prob=0.01):
+def copy_paste_augmentation(img, labels, objects, min_balls=3, max_balls=6):
     """
     Apply copy-paste augmentation by inserting extracted objects into a new image.
     :param img: Original image (numpy array)
@@ -58,11 +59,17 @@ def copy_paste_augmentation(img, labels, objects, paste_prob=0.01):
     h, w, _ = img.shape
     new_labels = labels.copy()
 
-    for obj in objects:
-        if random.random() > paste_prob:
-            continue  # Skip pasting object randomly
+    # avoid modifying original image and labels
+    img = img.copy()
+    new_labels = labels.copy()
+
+    # Randomly select number of objects to paste
+    num_objects = random.randint(min_balls, max_balls)
+    objs_to_copy = random.sample(objects, num_objects)
+
+    for obj in objs_to_copy:
         
-        obj_img, obj_bbox = obj
+        obj_img, _ = obj
 
         # Get a random position in the image
         x_center = random.randint(int(0.25*w), int(0.66*w) - obj_img.shape[1])
@@ -137,7 +144,7 @@ import os
 import cv2
 import numpy as np
 
-def process_dataset(root_folder, dataset_destination_path, aug_prob, overwrite=False):
+def bbox_copy_paste(root_folder, dataset_destination_path, num_copies, overwrite=False):
     """
     Processes a dataset by:
     - Copying validation & test images/labels without augmentation
@@ -146,7 +153,8 @@ def process_dataset(root_folder, dataset_destination_path, aug_prob, overwrite=F
 
     :param root_folder: Path to the original dataset (must contain 'train', 'valid', 'test' folders)
     :param dataset_destination_path: Path to save processed dataset
-    :param aug_prob: Probability of applying copy-paste augmentation to train images
+    :param num_copies: Number of augmented copies to generate for each training image
+    :param overwrite: Whether to overwrite existing image
     """
 
     # Define dataset subfolders
@@ -156,6 +164,10 @@ def process_dataset(root_folder, dataset_destination_path, aug_prob, overwrite=F
     for split in dataset_splits:
         os.makedirs(os.path.join(dataset_destination_path, split, "images"), exist_ok=True)
         os.makedirs(os.path.join(dataset_destination_path, split, "labels"), exist_ok=True)
+
+    # copy data.yaml file
+    shutil.copy(os.path.join(root_folder, "data.yaml"), os.path.join(dataset_destination_path, "data.yaml"))
+    
 
     for split in ["valid", "test"]:
         img_folder = os.path.join(root_folder, split, "images")
@@ -205,10 +217,7 @@ def process_dataset(root_folder, dataset_destination_path, aug_prob, overwrite=F
             label_save_path = os.path.join(dataset_destination_path, "train", "labels", img_file.replace(".jpg", ".txt"))
 
             
-
-            # Apply augmentation with probability `aug_prob`
-            if np.random.rand() < aug_prob:
-                if not overwrite:
+            if not overwrite:
                     cv2.imwrite(img_save_path, img)
                     with open(label_path, "r") as f_src, open(label_save_path, "w") as f_dst:
                         for line in f_src:
@@ -217,9 +226,11 @@ def process_dataset(root_folder, dataset_destination_path, aug_prob, overwrite=F
                             bbox_values = [f"{float(v)}" for v in values[1:]]
                             f_dst.write(f"{class_id} " + " ".join(bbox_values) + "\n")
 
-                            
+            # Apply augmentation 
+            for i in range(num_copies):
+                
                 img_aug, labels_aug = copy_paste_augmentation(img, labels, ball_objects)
-                aug_img_file = f"aug_{img_file}"
+                aug_img_file = f"aug_{i}_{img_file}"
                 aug_label_file = aug_img_file.replace(".jpg", ".txt")
 
                 aug_img_save_path = os.path.join(dataset_destination_path, "train", "images", aug_img_file)
@@ -289,7 +300,7 @@ def process_dataset(root_folder, dataset_destination_path, aug_prob, overwrite=F
 #     transforms.Normalize(mean=[0.5], std=[0.5])
 # ])
 
-if __name__ == "__main__":
-    process_dataset('dataset/yolov8/v3', 'dataset/yolov8/v3_copy_paste_aug', 0.5, overwrite=True)
+# if __name__ == "__main__":
+#     bbox_copy_paste('dataset/yolov8/v3', 'dataset/yolov8/v3_copy_paste_aug', 0.5, overwrite=True)
     
 
