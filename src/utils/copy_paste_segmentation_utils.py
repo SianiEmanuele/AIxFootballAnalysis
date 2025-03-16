@@ -2,16 +2,18 @@ import os
 import cv2
 import shutil
 import random
+from torch.utils.data import Dataset
+import torchvision.transforms as transforms
 import numpy as np
 import matplotlib.pyplot as plt
 
-def extract_ball_objects(image_folder, label_folder, segmented=False, ball_class=0):
+def extract_ball_objects(image_folder, label_folder, ball_class=0):
     """
-    Extracts small object crops (balls) from dataset.
-    :param image_folder: Path to images
-    :param label_folder: Path to YOLO labels
-    :param ball_class: Class index of the ball
-    :return: List of (cropped ball image, bounding box)
+    Estrae piccoli oggetti (palloni) da un dataset utilizzando annotazioni YOLO.
+    :param image_folder: Path alle immagini
+    :param label_folder: Path alle annotazioni YOLO
+    :param ball_class: Classe dell'oggetto (opzionale per estensione futura)
+    :return: Lista di tuple (immagine ritagliata, maschera)
     """
     ball_objects = []
 
@@ -23,102 +25,92 @@ def extract_ball_objects(image_folder, label_folder, segmented=False, ball_class
         label_path = os.path.join(label_folder, img_file.replace(".jpg", ".txt"))
 
         img = cv2.imread(img_path)
+        if img is None or not os.path.exists(label_path):
+            continue
+
         h, w, _ = img.shape
 
-        if not segmented:
+        # Crea una maschera binaria vuota
+        mask = np.zeros((h, w), dtype=np.uint8)
 
-            with open(label_path, "r") as f:
-                for line in f.readlines():
-                    cls, x, y, bw, bh = map(float, line.strip().split())
+        with open(label_path, "r") as f:
+            for line in f:
+                data = list(map(float, line.strip().split()))
+                cls = int(data[0])
+                coords = np.array(data[1:]).reshape(-1, 2)
 
-                    if int(cls) == ball_class:
-                        # Convert YOLO format to pixel coordinates
-                        x1 = int((x - bw / 2) * w)
-                        y1 = int((y - bh / 2) * h)
-                        x2 = int((x + bw / 2) * w)
-                        y2 = int((y + bh / 2) * h)
+                # Converti coordinate normalizzate in pixel
+                coords[:, 0] *= w  # x
+                coords[:, 1] *= h  # y
+                points = coords.astype(np.int32)
 
-                        ball_crop = img[y1:y2, x1:x2]  # Crop the ball
-                        if ball_crop.size > 0:
-                            ball_objects.append((ball_crop, (x, y, bw, bh)))
+                # Disegna il poligono sulla maschera se la classe corrisponde
+                if cls == ball_class:
+                    cv2.fillPoly(mask, [points], 255)
 
-        if segmented:
-            # Crea una maschera binaria vuota
-            mask = np.zeros((h, w), dtype=np.uint8)
+        # Trova i contorni dell'oggetto segmentato
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-            with open(label_path, "r") as f:
-                for line in f:
-                    data = list(map(float, line.strip().split()))
-                    cls = int(data[0])
-                    coords = np.array(data[1:]).reshape(-1, 2)
+        for contour in contours:
+            # Crea una maschera trasparente per il contorno
+            alpha = np.zeros_like(mask)
+            cv2.drawContours(alpha, [contour], -1, 255, thickness=cv2.FILLED)
 
-                    # Converti coordinate normalizzate in pixel
-                    coords[:, 0] *= w  # x
-                    coords[:, 1] *= h  # y
-                    points = coords.astype(np.int32)
+            # Aggiungi il canale alfa all'immagine originale
+            bgr = cv2.bitwise_and(img, img, mask=alpha)
+            rgba = cv2.merge([bgr, alpha])
 
-                    # Disegna il poligono sulla maschera se la classe corrisponde
-                    if cls == ball_class:
-                        cv2.fillPoly(mask, [points], 255)
+            # Ritaglia l'area effettiva della maschera (bounding box)
+            x, y, bw, bh = cv2.boundingRect(contour)
+            cropped = rgba[y:y + bh, x:x + bw]
 
-            # Trova i contorni dell'oggetto segmentato
-            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if cropped.size > 0:
+                ball_objects.append((cropped, (x, y, bw, bh)))
 
-            for contour in contours:
-                # Crea una maschera trasparente per il contorno
-                alpha = np.zeros_like(mask)
-                cv2.drawContours(alpha, [contour], -1, 255, thickness=cv2.FILLED)
-
-                # Aggiungi il canale alfa all'immagine originale
-                bgr = cv2.bitwise_and(img, img, mask=alpha)
-                rgba = cv2.merge([bgr, alpha])
-
-                # Ritaglia l'area effettiva della maschera (bounding box)
-                x, y, bw, bh = cv2.boundingRect(contour)
-                cropped = rgba[y:y + bh, x:x + bw]
-
-                if cropped.size > 0:
-                    ball_objects.append((cropped, (x, y, bw, bh)))
-
-        print(f"Extracted {len(ball_objects)} ball objects for augmentation.")
+    print(f"Extracted {len(ball_objects)} ball objects for augmentation.")
     return ball_objects
 
-def copy_paste_augmentation(img, labels, objects, segmented=False, min_balls=3, max_balls=6):
+
+        # print(f"Controllo file immagine: {img_path}")
+        # print(f"Controllo file maschera: {mask_path}")
+        
+        # if mask is None:
+        #     print(f"Maschera non trovata o non valida: {mask_path}")
+        # if img is None:
+        #     print(f"Immagine non trovata o non valida: {img_path}")
+
+
+
+def copy_paste_augmentation(img, labels, objects, min_balls=3, max_balls=6):
     """
     Apply copy-paste augmentation by inserting extracted objects into a new image.
     :param img: Original image (numpy array)
     :param labels: Labels for the image (YOLO format)
     :param objects: List of extracted small objects (e.g., footballs)
-    :param paste_prob: Probability of applying augmentation
+    :param min_balls: Minimum number of objects to paste
+    :param max_balls: Maximum number of objects to paste
     :return: Augmented image and updated labels
     """
-    
-    # if augment first save
     h, w, _ = img.shape
     new_labels = labels.copy()
 
-    # avoid modifying original image and labels
+    # Avoid modifying original image and labels
     img = img.copy()
-    new_labels = labels.copy()
 
     # Randomly select number of objects to paste
     num_objects = random.randint(min_balls, max_balls)
     objs_to_copy = random.sample(objects, num_objects)
 
     for obj in objs_to_copy:
-        
-        obj_img, bbox = obj
+        obj_img, bbox = obj  # Oggetto e bounding box
         bx, by, bw, bh = bbox
 
-        # Get a random position in the image
-        x_center = random.randint(int(0.25*w), int(0.66*w) - obj_img.shape[1])
-        y_center = random.randint(int(0.25*h), int(0.66*h) - obj_img.shape[0])
+        # Controlla che l'oggetto abbia il canale alfa
+        if obj_img.shape[2] == 4:
+            # Genera una posizione casuale per incollare l'oggetto
+            x_center = random.randint(0, w - bw)
+            y_center = random.randint(0, h - bh)
 
-        if not segmented:
-            # Paste the object onto the image
-            img[y_center:y_center+obj_img.shape[0], x_center:x_center+obj_img.shape[1]] = obj_img
-        
-        else:
             # Separazione dei canali BGR e Alfa
             bgr = obj_img[:, :, :3]
             alpha = obj_img[:, :, 3] / 255.0  # Normalizza alfa tra 0 e 1
@@ -130,18 +122,18 @@ def copy_paste_augmentation(img, labels, objects, segmented=False, min_balls=3, 
                     (1 - alpha) * img[y_center:y_center + bh, x_center:x_center + bw, c]
                 )
 
-        # Convert new object position into YOLO format
-        x_norm = (x_center + obj_img.shape[1] / 2) / w
-        y_norm = (y_center + obj_img.shape[0] / 2) / h
-        w_norm = obj_img.shape[1] / w
-        h_norm = obj_img.shape[0] / h
+            # Convert new object position into YOLO format
+            x_norm = (x_center + obj_img.shape[1] / 2) / w
+            y_norm = (y_center + obj_img.shape[0] / 2) / h
+            w_norm = obj_img.shape[1] / w
+            h_norm = obj_img.shape[0] / h
 
-        # Append new object label
-        new_labels.append([0, x_norm, y_norm, w_norm, h_norm])
+            # Aggiungi l'etichetta YOLO per il nuovo oggetto incollato
+            new_labels.append([0, x_norm, y_norm, w_norm, h_norm])
 
     return img, new_labels
 
-def bbox_copy_paste(root_folder, dataset_destination_path, num_copies, segmented=False, overwrite=False):
+def bbox_copy_paste_segmentation(root_folder, seg_folder, dataset_destination_path, num_copies, overwrite=False):
     """
     Processes a dataset by:
     - Copying validation & test images/labels without augmentation
@@ -191,15 +183,11 @@ def bbox_copy_paste(root_folder, dataset_destination_path, num_copies, segmented
 
     train_img_folder = os.path.join(root_folder, "train", "images")
     train_label_folder = os.path.join(root_folder, "train", "labels")
+    seg_img_folder = os.path.join(seg_folder, "images")
+    seg_label_folder = os.path.join(seg_folder, "labels")
 
     # Extract ball objects once
-    if not segmented:
-        ball_objects = extract_ball_objects(train_img_folder, train_label_folder)
-    else:
-        seg_img_folder = os.path.join(root_folder, "..", "segmented_dataset", "images")
-        seg_label_folder = os.path.join(root_folder,"segmented_dataset", "labels")
-        ball_objects = extract_ball_objects(seg_img_folder, seg_label_folder, segmented)
-    
+    ball_objects = extract_ball_objects(seg_img_folder, seg_label_folder)
     print(f"Extracted {len(ball_objects)} ball objects for augmentation.")
 
     for img_file in os.listdir(train_img_folder):
@@ -232,7 +220,8 @@ def bbox_copy_paste(root_folder, dataset_destination_path, num_copies, segmented
             # Apply augmentation 
             for i in range(num_copies):
                 
-                img_aug, labels_aug = copy_paste_augmentation(img, labels, ball_objects, segmented)
+                img_aug, labels_aug = copy_paste_augmentation(img, labels, ball_objects)
+                print('Labels aug: ', labels_aug)
                 aug_img_file = f"aug_{i}_{img_file}"
                 aug_label_file = aug_img_file.replace(".jpg", ".txt")
 
@@ -257,9 +246,16 @@ def bbox_copy_paste(root_folder, dataset_destination_path, num_copies, segmented
                             f_dst.write(f"{class_id} " + " ".join(bbox_values) + "\n")
 
     print("Dataset processing completed successfully!")
+    
 
-if __name__ == "__main__":
-    cwd = os.getcwd()
-    dataset_root_folder = os.path.join(cwd, "/dataset")
 
-    dataset_source_path = os.path.join(dataset_root_folder, "yolov9", "v0")
+import sys
+sys.path.append('..')
+cwd = os.getcwd()
+dataset_root_folder = os.path.join(cwd, "/dataset")
+
+dataset_source_path = os.path.join(r"C:\Users\laura\OneDrive\Desktop\Magistrale\Machine learning for vision\AIxFootballAnalysis\dataset\yolov9\v0")
+segmentation_path = r"C:\Users\laura\OneDrive\Desktop\segmentation"
+dataset_target_path = os.path.join(r"C:\Users\laura\OneDrive\Desktop\Magistrale\Machine learning for vision\AIxFootballAnalysis\dataset\yolov9\v3")
+
+bbox_copy_paste_segmentation(dataset_source_path, segmentation_path, dataset_target_path, num_copies=2, overwrite=True)

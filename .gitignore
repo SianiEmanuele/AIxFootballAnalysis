@@ -41,6 +41,7 @@ venv.bak/
 
 # Jupyter Notebook
 .ipynb_checkpoints
+*.ipynb
 
 # Environments
 .env
@@ -56,3 +57,5 @@ Thumbs.db
 src/training/*
 !src/training/yolo_training.ipynb
 dataset/
+
+src/training/yolo_training.ipynb
