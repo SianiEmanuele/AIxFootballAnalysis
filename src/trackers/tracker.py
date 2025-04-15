@@ -28,13 +28,13 @@ class Tracker:
         self.dev_mode = os.getenv("DEV") == "True"
         self.save_path = os.getenv("TRACKER_SAVE_PATH")
 
-    def draw_ellipse(self, frame, bbox, color, track_id=None):
+    def draw_ellipse(self, frame, bbox, color, conf=None):
         """
         Draw an ellipse around a bounding box in a frame.
         :param frame: The frame to draw the ellipse on.
         :param bbox: The bounding box to draw the ellipse around.
         :param color: The color of the ellipse.
-        :param track_id: Identifier of the object being tracked.
+        :param conf: Confidence score of the detection (optional).
         :return: The frame with the ellipse drawn on it.
         """
         y2 = int(bbox[3])
@@ -54,14 +54,16 @@ class Tracker:
             lineType=cv2.LINE_4,
         )
 
-        rectangle_width = 40
-        rectangle_height = 20
-        x1_rect = x_center - rectangle_width // 2
-        x2_rect = x_center + rectangle_width // 2
-        y1_rect = (y2 - rectangle_height // 2) + 15
-        y2_rect = (y2 + rectangle_height // 2) + 15
 
-        if track_id is not None:
+        if conf is not None:
+            # take only the first 2 decimal digits
+            conf = int(conf * 100) / 100
+            rectangle_width = 40
+            rectangle_height = 20
+            x1_rect = x_center - rectangle_width // 2
+            x2_rect = x_center + rectangle_width // 2
+            y1_rect = (y2 - rectangle_height // 2) + 15
+            y2_rect = (y2 + rectangle_height // 2) + 15
             cv2.rectangle(
                 frame,
                 (int(x1_rect),int(y1_rect)),
@@ -71,12 +73,12 @@ class Tracker:
             )
 
             x1_text = x1_rect + 12
-            if track_id > 99:
+            if conf > 99:
                 x1_text -=10
 
             cv2.putText(
                 frame,
-                f"{track_id}",
+                f"{conf}",
                 (int(x1_text), int(y1_rect + 15)),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,
@@ -85,12 +87,13 @@ class Tracker:
             )
         return frame
 
-    def draw_triangle(self, frame, bbox, color):
+    def draw_triangle(self, frame, bbox, color, conf=None):
         """
         Draw a triangular indicator on top of the ball.
         :param frame: The frame to draw the triangle on.
         :param bbox: The bounding box of the ball.
         :param color: The color of the triangle.
+        :param conf: Confidence score of the detection (optional).
         :return: The frame with the triangle drawn on it.
         """
         y = int(bbox[1]) # y1 for triangle on top of the ball
@@ -99,6 +102,37 @@ class Tracker:
         triangle_points = np.array([[x_center,y], [x_center-10,y-20], [x_center+10,y-20]])
         cv2.drawContours(frame, [triangle_points], 0, color, cv2.FILLED)
         cv2.drawContours(frame, [triangle_points], 0, (0,0,0), 2) # border
+        
+        if conf is not None:
+            conf = int(conf * 100) / 100
+
+            rectangle_width = 40
+            rectangle_height = 20
+            x1_rect = x_center - rectangle_width // 2
+            x2_rect = x_center + rectangle_width // 2
+            y1_rect = (int(bbox[1]) - rectangle_height // 2) + 30
+            y2_rect = (int(bbox[1]) + rectangle_height // 2) + 30
+            cv2.rectangle(
+                frame,
+                (int(x1_rect),int(y1_rect)),
+                (int(x2_rect),int(y2_rect)),
+                color,
+                thickness=cv2.FILLED,
+            )
+
+            x1_text = x1_rect + 12
+            if conf > 99:
+                x1_text -=10
+
+            cv2.putText(
+                frame,
+                f"{conf}",
+                (int(x1_text), int(y1_rect + 15)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0,0,0),
+                thickness=2
+            )
 
         return frame
 

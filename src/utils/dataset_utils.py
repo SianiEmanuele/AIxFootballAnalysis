@@ -80,7 +80,7 @@ def extract_ball_objects(image_folder, label_folder, segmented=False, ball_class
                 if cropped.size > 0:
                     ball_objects.append((cropped, (x, y, bw, bh)))
 
-        print(f"Extracted {len(ball_objects)} ball objects for augmentation.")
+    print(f"Extracted {len(ball_objects)} ball objects for augmentation.")
     return ball_objects
 
 def copy_paste_augmentation(img, labels, objects, segmented=False, min_balls=3, max_balls=6):
@@ -141,7 +141,7 @@ def copy_paste_augmentation(img, labels, objects, segmented=False, min_balls=3, 
 
     return img, new_labels
 
-def bbox_copy_paste(root_folder, dataset_destination_path, num_copies, segmented=False, overwrite=False):
+def bbox_copy_paste(dataset_root_folder, dataset_destination_path, num_copies, segmented=False, overwrite=False):
     """
     Processes a dataset by:
     - Copying validation & test images/labels without augmentation
@@ -163,12 +163,12 @@ def bbox_copy_paste(root_folder, dataset_destination_path, num_copies, segmented
         os.makedirs(os.path.join(dataset_destination_path, split, "labels"), exist_ok=True)
 
     # copy data.yaml file
-    shutil.copy(os.path.join(root_folder, "data.yaml"), os.path.join(dataset_destination_path, "data.yaml"))
+    shutil.copy(os.path.join(dataset_root_folder, "data.yaml"), os.path.join(dataset_destination_path, "data.yaml"))
     
 
     for split in ["valid", "test"]:
-        img_folder = os.path.join(root_folder, split, "images")
-        label_folder = os.path.join(root_folder, split, "labels")
+        img_folder = os.path.join(dataset_root_folder, split, "images")
+        label_folder = os.path.join(dataset_root_folder, split, "labels")
 
         for img_file in os.listdir(img_folder):
             if img_file.endswith(".jpg"):
@@ -189,15 +189,15 @@ def bbox_copy_paste(root_folder, dataset_destination_path, num_copies, segmented
                         f_dst.write(f"{class_id} " + " ".join(bbox_values) + "\n")
 
 
-    train_img_folder = os.path.join(root_folder, "train", "images")
-    train_label_folder = os.path.join(root_folder, "train", "labels")
+    train_img_folder = os.path.join(dataset_root_folder, "train", "images")
+    train_label_folder = os.path.join(dataset_root_folder, "train", "labels")
 
     # Extract ball objects once
     if not segmented:
         ball_objects = extract_ball_objects(train_img_folder, train_label_folder)
     else:
-        seg_img_folder = os.path.join(root_folder, "..", "segmented_dataset", "images")
-        seg_label_folder = os.path.join(root_folder,"segmented_dataset", "labels")
+        seg_img_folder = os.path.join(dataset_root_folder, "..", "segmented_dataset", "images")
+        seg_label_folder = os.path.join(dataset_root_folder, "..", "segmented_dataset", "labels")
         ball_objects = extract_ball_objects(seg_img_folder, seg_label_folder, segmented)
     
     print(f"Extracted {len(ball_objects)} ball objects for augmentation.")
@@ -260,6 +260,10 @@ def bbox_copy_paste(root_folder, dataset_destination_path, num_copies, segmented
 
 if __name__ == "__main__":
     cwd = os.getcwd()
-    dataset_root_folder = os.path.join(cwd, "/dataset")
+    dataset_root_folder = os.path.join(cwd, "dataset")
+    print(dataset_root_folder)
 
     dataset_source_path = os.path.join(dataset_root_folder, "yolov9", "v0")
+    dataset_destination_path = os.path.join(dataset_root_folder, "yolov9", "v3")
+
+    bbox_copy_paste(dataset_source_path, dataset_destination_path, num_copies=2, segmented=True, overwrite=False)
