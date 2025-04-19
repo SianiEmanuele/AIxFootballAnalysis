@@ -1,5 +1,5 @@
 # general settings
-name: finetune_Realesr-general-x4v3
+name: finetune_Realesr-general-x4v3_2
 model_type: RealESRGANModel
 scale: 4
 num_gpu: auto
@@ -99,10 +99,12 @@ network_d:
 # path
 path:
   # use the pre-trained Real-ESRNet model
-  pretrain_network_g: src\models\esrgan\pretrained\realesr-general-x4v3.pth
+  # pretrain_network_g: src\models\esrgan\pretrained\realesr-general-x4v3.pth
+  pretrain_network_g: src\models\esrgan\experiments\finetune_Realesr-general-x4v3\models\net_g_latest.pth
   param_key_g: params
   strict_load_g: true
-  pretrain_network_d: src\models\esrgan\pretrained\RealESRGAN_x4plus_netD.pth
+  # pretrain_network_d: src\models\esrgan\pretrained\RealESRGAN_x4plus_netD.pth
+  pretrain_network_d: src\models\esrgan\experiments\finetune_Realesr-general-x4v3\models\net_d_latest.pth
   param_key_d: params
   strict_load_d: true
   resume_state: ~

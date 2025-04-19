@@ -52,7 +52,7 @@ def extract_subimages(opt):
     input_folder = opt['input_folder']
     save_folder = opt['save_folder']
     if not osp.exists(save_folder):
-        os.makedirs(save_folder)
+        os.makedirs(save_folder, exist_ok=True)
         print(f'mkdir {save_folder} ...')
     else:
         print(f'Folder {save_folder} already exists. Exit.')
