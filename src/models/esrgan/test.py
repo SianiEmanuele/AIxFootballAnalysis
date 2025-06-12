@@ -13,7 +13,7 @@ def main():
     """Inference demo for Real-ESRGAN.
     """
     parser = argparse.ArgumentParser()
-    parser.add_argument('-i', '--input', type=str, default='src\models\esrgan\input_42.jpg', help='Input image or folder')
+    parser.add_argument('-i', '--input', type=str, default=r'C:\Users\siani\PycharmProjects\AIxFootballAnalysis\output_images\yolo9c_dataset_v2_high_res2\no_gan\input\input_25.jpg', help='Input image or folder')
     parser.add_argument(
         '-n',
         '--model_name',

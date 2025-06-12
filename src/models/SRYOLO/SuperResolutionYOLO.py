@@ -1,31 +1,60 @@
 import os
-import glob
 import cv2
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import torch
 import numpy as np
 from torch import nn
 from realesrgan.archs.srvgg_arch import SRVGGNetCompact
 from realesrgan import RealESRGANer
 from ultralytics import YOLO
+import gc
+from pathlib import Path
 
+class SRWrapper(nn.Module):
+    """
+    Applicazione on-the-fly di Real-ESRGAN come primo layer.
+    """
+    def __init__(self, upsampler: RealESRGANer, max_size: int, stride: int):
+        super().__init__()
+        self.upsampler = upsampler
+        self.max_size = max_size
+        self.stride = stride
 
+        # ultralytics compatibility for prediction
+        self.f = -1 # avoid warning about unused variable
+        self.i = 0
+
+    @torch.no_grad()
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: BxCxHxW, valori in [0,1]
+        b, c, h0, w0 = x.shape
+        out = []
+        for i in range(b):
+            img = (x[i].cpu().permute(1,2,0).numpy() * 255).astype('uint8')
+            try:
+                sr, _ = self.upsampler.enhance(img, outscale=1)
+            except RuntimeError as e:
+                print(f"OOM during SR: {e}")
+                torch.cuda.empty_cache()
+                sr = img
+            torch.cuda.empty_cache()
+            # resize
+            h, w = sr.shape[:2]
+            scale_ratio = self.max_size / max(h, w)
+            new_h, new_w = int(h*scale_ratio), int(w*scale_ratio)
+            sr = cv2.resize(sr, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+            # pad
+            ph, pw = (-new_h) % self.stride, (-new_w) % self.stride
+            top, bottom = ph//2, ph-ph//2
+            left, right = pw//2, pw-pw//2
+            sr = np.pad(sr, ((top,bottom),(left,right),(0,0)), constant_values=114)
+            tensor_sr = torch.from_numpy(sr).permute(2,0,1).float()/255.0
+            out.append(tensor_sr.to(x.device))
+        return torch.stack(out)
 
 class SRYOLO(nn.Module):
     """
-    Combines Real-ESRGAN super-resolution with YOLOv9c, applying SR on-the-fly
-    during predict and val, maintaining original aspect ratio.
-
-    Args:
-        yolo_weights (str): Path or name of YOLO model weights/config.
-        scale (int): Upscaling factor for Real-ESRGAN.
-        model_path (str): Path to the ESRGAN generator .pth file.
-        dni_weight (float): DNI weight.
-        tile (int): Tile size for tiled inference.
-        tile_pad (int): Tile padding.
-        pre_pad (int): Pre-padding.
-        max_size (int, optional): Maximum size for longer edge, preserving aspect ratio.
-        device (str): Torch device identifier.
+    Integrazione di Real-ESRGAN nel modello YOLOv9c.
+    SR viene applicata on-the-fly durante train, val e predict.
     """
     def __init__(
         self,
@@ -42,9 +71,9 @@ class SRYOLO(nn.Module):
         super().__init__()
         self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
         self.max_size = max_size
-        # Initialize Real-ESRGAN
-        arch = SRVGGNetCompact(3, 3, 64, 32, scale, 'prelu')
-        self.upsampler = RealESRGANer(
+        # Init SR upsampler
+        arch = SRVGGNetCompact(3,3,64,32,scale,'prelu')
+        upsampler = RealESRGANer(
             scale=scale,
             model_path=model_path,
             dni_weight=dni_weight,
@@ -55,97 +84,88 @@ class SRYOLO(nn.Module):
             half=True,
             gpu_id=0 if 'cuda' in device else -1
         )
-        # Initialize YOLOv9c
+        # Init YOLO
         self.yolo = YOLO(yolo_weights)
+
+        if not self.is_trained_model(yolo_weights):
+            # Se stai usando un modello base tipo yolov9c.pt, allora aggiungi SRWrapper
+            stride = int(self.yolo.model.stride.max())
+            self.yolo.model.model = nn.Sequential(
+                SRWrapper(self.upsampler, self.max_size, stride),
+                *list(self.yolo.model.model.children())
+            )
+        # Altrimenti, `best.pt` si assume già abbia SRWrapper incluso nel backbone
+
         self.yolo.model.to(self.device)
-        self.stride = int(self.yolo.model.stride.max())
 
-    def _load_and_preprocess(self, source):
+    def is_trained_model(self, path: str) -> bool:
+        return Path(path).name in ['best.pt', 'last.pt']
+
+    def train(self, **kwargs):
+        """Chiamata identica a YOLO.train, con SR on-the-fly integrata."""
+        return self.yolo.train(**kwargs)
+
+    def val(self, **kwargs):
+        return self.yolo.val(**kwargs)
+
+    def predict(self, source, **kwargs):
         """
-        Load images from path/folder, apply SR and resizing, return list of numpy HWC images.
+        Predict con SR integrata e gestione memoria ottimizzata
         """
-        paths = []
-        if os.path.isdir(source):
-            for ext in ('*.jpg', '*.png', '*.jpeg'):
-                paths.extend(sorted(glob.glob(os.path.join(source, ext))))
-        elif os.path.isfile(source):
-            paths = [source]
-        else:
-            raise ValueError(f"Invalid source: {source}")
+        # Imposta dimensione immagine se non specificata
+        if 'imgsz' not in kwargs:
+            kwargs['imgsz'] = self.max_size
 
-        processed = []
-        for p in paths:
-            img = cv2.cvtColor(cv2.imread(p), cv2.COLOR_BGR2RGB)
+        # Riduci batch size per evitare OOM durante predict
+        original_batch = kwargs.get('batch', None)
+        if original_batch is None or original_batch > 4:
+            kwargs['batch'] = 2
 
-            try:
-                sr, _ = self.upsampler.enhance(img, outscale=1)
-            except RuntimeError as e:
-                print(f"OOM during SR for {p}: {e}")
-                torch.cuda.empty_cache()
-                continue
-
+        try:
+            # Pulizia memoria prima della predict
             torch.cuda.empty_cache()
+            gc.collect()
 
-            # Resize preserving aspect ratio
-            if self.max_size:
-                h0, w0 = sr.shape[:2]
-                scale_ratio = self.max_size / max(h0, w0)
-                new_w, new_h = int(w0 * scale_ratio), int(h0 * scale_ratio)
-                sr = cv2.resize(sr, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+            # Esegui predict
+            results = self.yolo.predict(source, **kwargs)
 
-            # Pad to stride
-            h, w = sr.shape[:2]
-            ph, pw = (-h) % self.stride, (-w) % self.stride
-            top, bottom = divmod(ph, 2)
-            left, right = divmod(pw, 2)
-            sr = np.pad(sr, ((top, bottom), (left, right), (0, 0)), mode='constant', constant_values=114)
+            # Filtro dei risultati: rimuovi quelli con immagini non valide
+            valid_results = []
+            for r in results:
+                if r.orig_img is not None and isinstance(r.orig_img, np.ndarray):
+                    valid_results.append(r)
+                else:
+                    print(f"Warning: Result with None image skipped.")
 
-            processed.append(sr)
+            return valid_results
 
-            del img, sr  # Cleanup
+        except (RuntimeError, torch.cuda.OutOfMemoryError) as e:
+            print(f"OOM durante predict, riprovo con batch=1: {e}")
             torch.cuda.empty_cache()
+            gc.collect()
 
-        return processed
+            kwargs['batch'] = 1
+            results = self.yolo.predict(source, **kwargs)
 
-    def predict(self, source=None, imgs=None, **kwargs):
-        """
-        Run inference with SR preprocessing.
+            valid_results = []
+            for r in results:
+                if r.orig_img is not None and isinstance(r.orig_img, np.ndarray):
+                    valid_results.append(r)
+                else:
+                    print(f"Warning: Result with None image skipped.")
 
-        Args:
-            source (str): Path to image or directory.
-            imgs (List[np.ndarray]): List of HWC numpy images.
-        Returns:
-            List of ultralytics Results objects.
-        """
-        if source:
-            hwc_imgs = self._load_and_preprocess(source)
-        elif imgs is not None:
-            hwc_imgs = []
-            for img in imgs:
-                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB) if img.ndim == 3 and img.shape[2] == 3 else img
-                try:
-                    sr, _ = self.upsampler.enhance(img, outscale=1)
-                except RuntimeError as e:
-                    print(f"OOM during SR: {e}")
-                    torch.cuda.empty_cache()
-                    continue
-                hwc_imgs.append(sr)
-                del img, sr
-                torch.cuda.empty_cache()
-        else:
-            raise ValueError("predict requires `source` or `imgs`")
+            return valid_results
 
-        results = self.yolo.predict(source=hwc_imgs, half=True, **kwargs)
-        return results
+        finally:
+            torch.cuda.empty_cache()
+            gc.collect()
 
-    def val(self, source=None, imgs=None, **kwargs):
-        """
-        Validation on SR images (alias to predict).
-        """
-        return self.predict(source=source, imgs=imgs, **kwargs)
 
-# Example usage
+
+# Esempio
 if __name__ == '__main__':
+    import os
+    dataset_path = r'dataset\yolov9\v3'
     sr_yolo = SRYOLO(
         yolo_weights='yolov9c.pt',
         scale=4,
@@ -156,35 +176,16 @@ if __name__ == '__main__':
         pre_pad=0,
         max_size=1280
     )
-    preds = sr_yolo.predict(source='dataset/images')
+    sr_yolo.train(
+        data=os.path.join(dataset_path, 'data.yaml'),
+        epochs=50,
+        imgsz=1280,
+        save=True,
+        project="yolo_football_analysis",
+        name="yoloSR_dataset_v3_high_res",
+        batch=4
+    )
+    sr_yolo.val(data=os.path.join(dataset_path, 'data.yaml'), imgsz=1280)
+    preds = sr_yolo.predict(source='dataset/images', imgsz=1280)
     for r in preds:
         print(r.orig_img.shape, len(r.boxes))
-
-
-
-# Example usage
-# if __name__ == '__main__':
-#     sr_yolo = SRYOLO(
-#         yolo_weights='yolov9c.pt',
-#         scale=4,
-#         model_path=r'src\models\esrgan\experiments\finetune_Realesr-general-x4v3_2\models\net_g_latest.pth',
-#         dni_weight=0.5,
-#         tile=0,
-#         tile_pad=10,
-#         pre_pad=0
-#     )
-#     preds = sr_yolo.predict(source='path/to/images')
-#     print(preds)
-
-
-# Usage examples:
-
-# sr_yolo.train(data='dataset.yaml', epochs=20)
-# sr_yolo.val(data='dataset.yaml')
-# sr_yolo.predict(source='image.jpg')
-
-
-
-
-
-
